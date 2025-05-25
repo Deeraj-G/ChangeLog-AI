@@ -10,7 +10,7 @@ Transform the existing CLI-based AI changelog generator into a full-stack applic
 - **Backend**: Python (FastAPI) - Reusing existing Python code
 - **Frontend**: React + TypeScript
 - **Database**: SQLite (for MVP) / PostgreSQL (if needed)
-- **AI**: Claude AI (existing integration)
+- **AI**: OpenAI (GPT-4) - For changelog generation
 - **Deployment**: Docker + GitHub Actions
 
 ## Phase 1: Backend Development (Week 1)
@@ -43,7 +43,9 @@ Transform the existing CLI-based AI changelog generator into a full-stack applic
          "version": str,
          "content": str,         # if source is "manual"
          "title": str,
-         "tags": List[str]       # optional
+         "tags": List[str],      # optional
+         "model": str,           # optional, defaults to "gpt-4"
+         "temperature": float    # optional, defaults to 0.7
      }
      ```
    - Features:
@@ -100,9 +102,41 @@ Transform the existing CLI-based AI changelog generator into a full-stack applic
      - API key is optional for programmatic access
 
 3. **Security & Authentication**
-   - Implement API key authentication
+   - Implement GitHub OAuth authentication
+     - Secure token storage and refresh flow
+     - Proper scopes for repository access
+     - Token encryption at rest
    - Add rate limiting
-   - Secure storage of Claude API keys
+     - Per-user rate limits for API calls
+     - Per-repository rate limits for changelog generation
+     - IP-based rate limiting for public endpoints
+   - Secure storage of sensitive data
+     - Encrypt GitHub access tokens
+     - Secure storage of OpenAI API keys
+     - Environment variable management
+   - Security headers and CORS
+     - Proper CORS configuration for frontend
+     - Security headers (HSTS, CSP, etc.)
+     - XSS protection
+   - Audit logging
+     - Track authentication attempts
+     - Log changelog generation requests
+     - Monitor rate limit hits
+
+4. **AI Integration**
+   - OpenAI API Integration
+     - Implement GPT-4 for changelog generation
+     - Optimize prompts for changelog style
+     - Handle API rate limits and costs
+     - Implement fallback to GPT-3.5 if needed
+   - Prompt Engineering
+     - Design system prompts for consistent output
+     - Create templates for different changelog styles
+     - Implement context management for commit history
+   - Cost Management
+     - Token usage tracking
+     - Cost estimation before generation
+     - Usage limits per user
 
 ## Phase 2: Frontend Development (Week 1-2)
 1. **Developer Interface**
