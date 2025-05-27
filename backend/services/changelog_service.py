@@ -21,7 +21,7 @@ class ChangelogService:
         """Validate if the repository exists and is accessible."""
         try:
             # Try to get repository info without cloning
-            response = requests.head(f"https://github.com/{repo_url.split('/')[-1].replace('.git', '')}")
+            response = requests.head(repo_url)
             if response.status_code == 404:
                 raise ValueError("Repository not found")
             if response.status_code == 403:
