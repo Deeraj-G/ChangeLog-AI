@@ -4,6 +4,7 @@ Service layer for changelog generation and management.
 
 import os
 import subprocess
+import aiohttpx
 from datetime import datetime
 from typing import Dict, List
 from uuid import UUID
@@ -11,7 +12,6 @@ from uuid import UUID
 import requests
 from fastapi import HTTPException, status
 from loguru import logger
-import aiohttp
 
 from .openai_client import OpenAIClientManager
 
@@ -227,17 +227,24 @@ class ChangelogService:
             )
         return user.github_access_token
 
+
+
     async def _get_commits_from_api(self, repo_url: str, commit_range: int, user_id: UUID) -> List[Dict]:
         """Fetch the last N commits using GitHub API."""
         try:
-            # Convert repo URL to API format
-            # e.g., https://github.com/username/repo.git -> username/repo
-            repo_path = "/".join(repo_url.split("/")[-2:]).replace(".git", "")
+            # Extract the repository path (owner/repo) from the URL
+            # Handle different GitHub URL formats
+            if "github.com" in repo_url:
+                # Remove .git if present and split on github.com/
+                parts = repo_url.replace(".git", "").split("github.com/")[-1].split("/")
+                if len(parts) >= 2:
+                    repo_path = f"{parts[0]}/{parts[1]}"
+            
             
             # Get the user's GitHub token from our database
             github_token = await self._get_user_github_token(user_id)
             
-            async with aiohttp.ClientSession() as session:
+            async with aiohttpx.AsyncClient() as session:
                 headers = {"Authorization": f"token {github_token}"}
                 # Use the commits endpoint with per_page parameter
                 url = f"{self.github_api_url}/repos/{repo_path}/commits?per_page={commit_range}"
@@ -258,7 +265,7 @@ class ChangelogService:
                     commits = await response.json()
                     return commits
 
-        except aiohttp.ClientError as e:
+        except aiohttpx.ClientError as e:
             raise ValueError(f"Error accessing GitHub API: {str(e)}")
 
 
