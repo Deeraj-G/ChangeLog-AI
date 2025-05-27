@@ -6,7 +6,9 @@ from pydantic import BaseModel, Field
 
 class ChangelogBase(BaseModel):
     repo_url: str = Field(..., description="URL of the git repository")
-    commit_range: int = Field(..., description="Number of commits to include in the changelog")
+    commit_range: int = Field(
+        ..., description="Number of commits to include in the changelog"
+    )
 
 
 class ChangelogResponse(ChangelogBase):
