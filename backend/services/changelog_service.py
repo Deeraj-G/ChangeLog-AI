@@ -4,19 +4,18 @@ Service layer for changelog generation and management.
 
 import os
 import subprocess
-from typing import List, Dict, Optional
+from typing import Dict, List
+from uuid import UUID
+
 import requests
 from loguru import logger
-from uuid import UUID
-from openai import OpenAI
 
-# Load environment variables
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-client = OpenAI(api_key=OPENAI_API_KEY)
+from .openai_client import OpenAIClientManager
+
 
 class ChangelogService:
     @staticmethod
-    async def get_git_commits(repo_url: str, commit_range: str) -> List[Dict]:
+    async def _get_git_commits(repo_url: str, commit_range: int) -> List[Dict]:
         """Fetch commits from a git repository."""
         try:
             # Clone the repository if it doesn't exist
@@ -29,18 +28,22 @@ class ChangelogService:
                     stderr=subprocess.PIPE,
                 )
 
+            logger.info(f"Cloned repository {repo_url} to /tmp/{repo_name}")
+
             # Change to the repository directory
             os.chdir(f"/tmp/{repo_name}")
 
             # Format: commit hash, author, date, and commit message
             format_string = "%H%n%an%n%ad%n%s%n%b%n----------"
             result = subprocess.run(
-                ["git", "log", commit_range, f"--pretty=format:{format_string}"],
+                ["git", "log", f"-{commit_range}", f"--pretty=format:{format_string}"],
                 check=True,
                 stdout=subprocess.PIPE,
                 text=True,
             )
             commits_raw = result.stdout.split("----------")[:-1]
+
+            logger.info(f"Fetched {len(commits_raw)} commits from {repo_url}")
 
             # Parse the raw commit data
             commits = []
@@ -56,14 +59,17 @@ class ChangelogService:
                     }
                     commits.append(commit)
 
+            logger.info(f"Parsed {len(commits)} commits from {repo_url}")
+
             return commits
         except subprocess.CalledProcessError as e:
             logger.error(f"Error fetching git commits: {e}")
             raise RuntimeError(f"Failed to fetch git commits: {str(e)}")
 
     @staticmethod
-    def preprocess_commits(commits: List[Dict], max_commits: int = 50) -> List[Dict]:
+    def _preprocess_commits(commits: List[Dict], max_commits: int = 50) -> List[Dict]:
         """Preprocess and filter commits for better changelog generation."""
+        logger.info(f"Preprocessing {len(commits)} commits")
         if len(commits) > max_commits:
             # Score commits by message length and keywords
             scored_commits = []
@@ -72,9 +78,31 @@ class ChangelogService:
 
                 # Boost score for important keywords
                 keywords = [
-                    "add", "added", "feature", "featured", "improve", "improved",
-                    "fix", "fixed", "implement", "implemented", "update", "updated",
-                    "updates", "support", "supported", "refactor", "refactored",
+                    "add",
+                    "added",
+                    "adding",
+                    "refactor",
+                    "refactored",
+                    "refactoring",
+                    "refactored",
+                    "feature",
+                    "featured",
+                    "improve",
+                    "improved",
+                    "fix",
+                    "fixed",
+                    "implement",
+                    "implemented",
+                    "update",
+                    "updated",
+                    "updates",
+                    "support",
+                    "supported",
+                    "refactor",
+                    "refactored",
+                    "merge",
+                    "merged",
+                    "merging"
                 ]
                 lowered = (commit["subject"] + commit["body"]).lower()
 
@@ -84,23 +112,34 @@ class ChangelogService:
 
                 # Reduce score for trivial changes
                 trivial = [
-                    "typo", "whitespace", "comment", "formatting", "format",
-                    "spacing", "linting",
+                    "typo",
+                    "whitespace",
+                    "comment",
+                    "formatting",
+                    "format",
+                    "spacing",
+                    "linting",
                 ]
                 for word in trivial:
                     if word in lowered:
                         score -= 15
 
+                # logger.info(f"Scored commit {commit['subject']} with score {score}")
+
                 scored_commits.append((score, commit))
 
             # Sort by score and take top max_commits
+            logger.info(f"Sorted {len(scored_commits)} commits")
             scored_commits.sort(reverse=True)
             return [commit for _, commit in scored_commits[:max_commits]]
 
         return commits
 
     @staticmethod
-    async def generate_changelog(commits: List[Dict], model: str = "gpt-4o-mini", temperature: float = 0.5) -> str:
+    async def _generate_changelog(
+        commits: List[Dict], model: str = "gpt-4o-mini", temperature: float = 0.5
+    ) -> str:
+        logger.info(f"Generating changelog for {len(commits)} commits")
         """Generate a changelog using the OpenAI API."""
         commit_details = "\n\n".join(
             [
@@ -138,22 +177,27 @@ class ChangelogService:
         {commit_details}
         """
         try:
+            logger.info(f"Generating changelog for {len(commits)} commits")
+            # Get the client instance from the manager
+            client = OpenAIClientManager.get_client()
             response = client.chat.completions.create(
                 model=model,
-                messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": prompt}],
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": prompt},
+                ],
                 max_tokens=4096,
                 temperature=temperature,
             )
-
-            result = response.choices[0].message.content
-            if "content" in result:
-                changelog_content = result["content"][0]["text"]
-                return changelog_content.replace("\\n", "\n")
+            logger.info(f"Response: {response.model_dump_json()}")
+            result = response.choices[0].message
+            if result.content:
+                return result.content
             else:
                 raise RuntimeError("Unexpected API response format")
 
         except requests.exceptions.RequestException as e:
-            logger.error(f"Error calling Claude API: {e}")
+            logger.error(f"Error calling OpenAI API: {e}")
             if hasattr(e, "response") and e.response:
                 logger.error(f"Response status code: {e.response.status_code}")
                 logger.error(f"Response body: {e.response.text}")
@@ -161,41 +205,22 @@ class ChangelogService:
 
     @staticmethod
     async def create_changelog(
-        source: str,
-        repo_url: Optional[str] = None,
-        commit_range: Optional[str] = None,
-        content: Optional[str] = None,
-        version: str = "",
-        title: str = "",
-        tags: List[str] = None,
-        model: str = "gpt-4o-mini",
-        temperature: float = 0.5,
+        repo_url: str,
+        commit_range: int,
         user_id: UUID = None,
     ) -> Dict:
-        """Create a new changelog entry."""
+        """Create a new changelog entry from git history."""
         try:
-            if source == "git" and repo_url and commit_range:
-                # Generate changelog from git commits
-                commits = await ChangelogService.get_git_commits(repo_url, commit_range)
-                commits = ChangelogService.preprocess_commits(commits)
-                content = await ChangelogService.generate_changelog(
-                    commits, model=model, temperature=temperature
-                )
-            elif source == "manual" and content:
-                # Use provided content directly
-                pass
-            else:
-                raise ValueError("Invalid source or missing required parameters")
+            # Generate changelog from git commits
+            commits = await ChangelogService._get_git_commits(repo_url, commit_range)
+            commits = ChangelogService._preprocess_commits(commits, max_commits=commit_range)
+            content = await ChangelogService._generate_changelog(commits)
 
             # TODO: Store in database
             changelog = {
                 "id": UUID("00000000-0000-0000-0000-000000000000"),  # Placeholder
                 "user_id": user_id,
-                "title": title,
                 "content": content,
-                "version": version,
-                "tags": tags or [],
-                "source": source,
                 "repo_url": repo_url,
                 "commit_range": commit_range,
             }
@@ -221,4 +246,4 @@ class ChangelogService:
     async def delete_changelog(changelog_id: UUID) -> None:
         """Delete a specific changelog."""
         # TODO: Implement database deletion
-        raise NotImplementedError("Database integration not implemented") 
+        raise NotImplementedError("Database integration not implemented")
