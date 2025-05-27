@@ -4,16 +4,33 @@ Service layer for changelog generation and management.
 
 import os
 import subprocess
+from datetime import datetime
 from typing import Dict, List
 from uuid import UUID
 
 import requests
+from fastapi import HTTPException, status
 from loguru import logger
 
 from .openai_client import OpenAIClientManager
 
 
 class ChangelogService:
+    @staticmethod
+    async def _validate_repository(repo_url: str) -> bool:
+        """Validate if the repository exists and is accessible."""
+        try:
+            # Try to get repository info without cloning
+            response = requests.head(f"https://github.com/{repo_url.split('/')[-1].replace('.git', '')}")
+            if response.status_code == 404:
+                raise ValueError("Repository not found")
+            if response.status_code == 403:
+                raise ValueError("Repository is private or access is restricted")
+            return True
+        except requests.RequestException as e:
+            raise ValueError(f"Error accessing repository: {str(e)}")
+
+
     @staticmethod
     async def _get_git_commits(repo_url: str, commit_range: int) -> List[Dict]:
         """Fetch commits from a git repository."""
@@ -28,8 +45,6 @@ class ChangelogService:
                     stderr=subprocess.PIPE,
                 )
 
-            logger.info(f"Cloned repository {repo_url} to /tmp/{repo_name}")
-
             # Change to the repository directory
             os.chdir(f"/tmp/{repo_name}")
 
@@ -42,8 +57,6 @@ class ChangelogService:
                 text=True,
             )
             commits_raw = result.stdout.split("----------")[:-1]
-
-            logger.info(f"Fetched {len(commits_raw)} commits from {repo_url}")
 
             # Parse the raw commit data
             commits = []
@@ -59,8 +72,6 @@ class ChangelogService:
                     }
                     commits.append(commit)
 
-            logger.info(f"Parsed {len(commits)} commits from {repo_url}")
-
             return commits
         except subprocess.CalledProcessError as e:
             logger.error(f"Error fetching git commits: {e}")
@@ -69,7 +80,6 @@ class ChangelogService:
     @staticmethod
     def _preprocess_commits(commits: List[Dict], max_commits: int = 50) -> List[Dict]:
         """Preprocess and filter commits for better changelog generation."""
-        logger.info(f"Preprocessing {len(commits)} commits")
         if len(commits) > max_commits:
             # Score commits by message length and keywords
             scored_commits = []
@@ -89,7 +99,6 @@ class ChangelogService:
                     "featured",
                     "improve",
                     "improved",
-                    "fix",
                     "fixed",
                     "implement",
                     "implemented",
@@ -102,7 +111,7 @@ class ChangelogService:
                     "refactored",
                     "merge",
                     "merged",
-                    "merging"
+                    "merging",
                 ]
                 lowered = (commit["subject"] + commit["body"]).lower()
 
@@ -112,24 +121,27 @@ class ChangelogService:
 
                 # Reduce score for trivial changes
                 trivial = [
+                    "patch",
+                    "minor",
                     "typo",
+                    "typos",
                     "whitespace",
                     "comment",
+                    "comments",
+                    "commented",
                     "formatting",
                     "format",
                     "spacing",
+                    "lint"
                     "linting",
                 ]
                 for word in trivial:
                     if word in lowered:
                         score -= 15
 
-                # logger.info(f"Scored commit {commit['subject']} with score {score}")
-
                 scored_commits.append((score, commit))
 
             # Sort by score and take top max_commits
-            logger.info(f"Sorted {len(scored_commits)} commits")
             scored_commits.sort(reverse=True)
             return [commit for _, commit in scored_commits[:max_commits]]
 
@@ -139,7 +151,6 @@ class ChangelogService:
     async def _generate_changelog(
         commits: List[Dict], model: str = "gpt-4o-mini", temperature: float = 0.5
     ) -> str:
-        logger.info(f"Generating changelog for {len(commits)} commits")
         """Generate a changelog using the OpenAI API."""
         commit_details = "\n\n".join(
             [
@@ -177,7 +188,6 @@ class ChangelogService:
         {commit_details}
         """
         try:
-            logger.info(f"Generating changelog for {len(commits)} commits")
             # Get the client instance from the manager
             client = OpenAIClientManager.get_client()
             response = client.chat.completions.create(
@@ -189,7 +199,6 @@ class ChangelogService:
                 max_tokens=4096,
                 temperature=temperature,
             )
-            logger.info(f"Response: {response.model_dump_json()}")
             result = response.choices[0].message
             if result.content:
                 return result.content
@@ -211,9 +220,15 @@ class ChangelogService:
     ) -> Dict:
         """Create a new changelog entry from git history."""
         try:
-            # Generate changelog from git commits
+            # Validate the repository
+            await ChangelogService._validate_repository(repo_url)
+            # Get git commits
             commits = await ChangelogService._get_git_commits(repo_url, commit_range)
-            commits = ChangelogService._preprocess_commits(commits, max_commits=commit_range)
+            # Preprocess commits
+            commits = ChangelogService._preprocess_commits(
+                commits, max_commits=commit_range
+            )
+            # Generate changelog
             content = await ChangelogService._generate_changelog(commits)
 
             # TODO: Store in database
@@ -223,12 +238,23 @@ class ChangelogService:
                 "content": content,
                 "repo_url": repo_url,
                 "commit_range": commit_range,
+                "created_at": datetime.now(),
+                "updated_at": datetime.now(),
             }
             return changelog
 
+        except ValueError as e:
+            # Handle validation errors
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=str(e)
+            )
         except Exception as e:
             logger.error(f"Error creating changelog: {e}")
-            raise RuntimeError(f"Failed to create changelog: {str(e)}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to create changelog: {str(e)}"
+            )
 
     @staticmethod
     async def get_changelog(changelog_id: UUID) -> Dict:
