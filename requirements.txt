@@ -2,7 +2,7 @@
 fastapi==0.115.10
 uvicorn==0.34.0
 python-multipart==0.0.20
-httpx==0.26.0
+aiohttpx==0.0.12
 
 # AI/ML
 openai==1.65.1
