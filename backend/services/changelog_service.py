@@ -11,11 +11,16 @@ from uuid import UUID
 import requests
 from fastapi import HTTPException, status
 from loguru import logger
+import aiohttp
 
 from .openai_client import OpenAIClientManager
 
 
 class ChangelogService:
+    def __init__(self, db_session):  # Add database session
+        self.github_api_url = "https://api.github.com"
+        self.db = db_session
+
     @staticmethod
     async def _validate_repository(repo_url: str) -> bool:
         """Validate if the repository exists and is accessible."""
@@ -212,25 +217,71 @@ class ChangelogService:
                 logger.error(f"Response body: {e.response.text}")
             raise RuntimeError(f"Failed to generate changelog: {str(e)}")
 
-    @staticmethod
+    async def _get_user_github_token(self, user_id: UUID) -> str:
+        """Get the user's GitHub token from our database."""
+        user = await self.db.get_user(user_id)
+        if not user or not user.github_access_token:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="GitHub authentication required"
+            )
+        return user.github_access_token
+
+    async def _get_commits_from_api(self, repo_url: str, commit_range: int, user_id: UUID) -> List[Dict]:
+        """Fetch the last N commits using GitHub API."""
+        try:
+            # Convert repo URL to API format
+            # e.g., https://github.com/username/repo.git -> username/repo
+            repo_path = "/".join(repo_url.split("/")[-2:]).replace(".git", "")
+            
+            # Get the user's GitHub token from our database
+            github_token = await self._get_user_github_token(user_id)
+            
+            async with aiohttp.ClientSession() as session:
+                headers = {"Authorization": f"token {github_token}"}
+                # Use the commits endpoint with per_page parameter
+                url = f"{self.github_api_url}/repos/{repo_path}/commits?per_page={commit_range}"
+                
+                async with session.get(url, headers=headers) as response:
+                    if response.status == 401:
+                        raise HTTPException(
+                            status_code=status.HTTP_401_UNAUTHORIZED,
+                            detail="GitHub authentication expired"
+                        )
+                    if response.status == 404:
+                        raise ValueError("Repository not found")
+                    if response.status == 403:
+                        raise ValueError("Repository access denied")
+                    if response.status != 200:
+                        raise ValueError(f"GitHub API error: {response.status}")
+                    
+                    commits = await response.json()
+                    return commits
+
+        except aiohttp.ClientError as e:
+            raise ValueError(f"Error accessing GitHub API: {str(e)}")
+
+
     async def create_changelog(
+        self,
         repo_url: str,
         commit_range: int,
-        user_id: UUID = None,
+        user_id: UUID,
     ) -> Dict:
-        """Create a new changelog entry from git history."""
+        """Create a new changelog entry using GitHub API."""
         try:
-            # Validate the repository
+            # # Validate the repository
             await ChangelogService._validate_repository(repo_url)
-            # Get git commits
+            # # Get git commits
             commits = await ChangelogService._get_git_commits(repo_url, commit_range)
+            # commits = await self._get_commits_from_api(repo_url, commit_range, user_id)
             # Preprocess commits
             commits = ChangelogService._preprocess_commits(
                 commits, max_commits=commit_range
             )
             # Generate changelog
             content = await ChangelogService._generate_changelog(commits)
-
+            
             # TODO: Store in database
             changelog = {
                 "id": UUID("00000000-0000-0000-0000-000000000000"),  # Placeholder
