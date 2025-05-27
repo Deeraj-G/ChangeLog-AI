@@ -12,10 +12,9 @@ from backend.models.models import (
     ChangelogBase,
     ChangelogResponse,
     UserCreate,
-    UserResponse,
+    UserResponse
 )
 from backend.services.changelog_service import ChangelogService
-
 
 load_dotenv()
 
@@ -25,8 +24,6 @@ app = FastAPI(
     description="API for generating and managing AI-powered changelogs",
     version="1.0.0",
 )
-
-
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],  # Allows all origins
@@ -54,16 +51,19 @@ async def list_changelogs(
 )
 async def create_changelog(changelog: ChangelogBase):
     """Create a new changelog entry from git history."""
+    if changelog.commit_range <= 0:
+        raise HTTPException(status_code=400, detail="Commit range must be greater than 0")
+
     try:
         # TODO: Get user_id from auth context
         user_id = UUID("00000000-0000-0000-0000-000000000000")  # Placeholder
 
-        result = await ChangelogService.create_changelog(
+        changelog_result = await ChangelogService.create_changelog(
             repo_url=changelog.repo_url,
             commit_range=changelog.commit_range,
             user_id=user_id,
         )
-        return result
+        return changelog_result
     except ValueError as e:
         raise HTTPException(status_code=400, detail="Invalid request")
     except RuntimeError as e:
